@@ -9,12 +9,20 @@ execution of logic circuits.
 Why Circa?
 ----------
 
-A lot of existing software has at least one large problem that prevents novice
-users from engaging or restricts their growth in the domain of boolean algebra
-and electronics.
+Logic simulation software is either very expensive or unmaintained. On top of
+that, most of these have further limitations that might restrict a lot of
+projects or a very confusing UI.
 
-We aim to build a free, open-source tool with great efficiency and user
+We aim to build a free, open-source tool with acceptable efficiency and user
 accessibility.
+
+Planned Features
+----------------
+
+ - [ ] Multibit nets **without** direction
+ - [ ] User-made circuits as components
+ - [ ] Stepped, monitorable simulation
+ - [ ] Grid-based editor
 
 Built with Love and...
 ----------------------
