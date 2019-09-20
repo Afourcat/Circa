@@ -20,8 +20,9 @@ use generational_arena::{Index, Arena};
 use super::{Tristate, Component};
 
 pub struct Net {
-    future_value: Tristate,
-    active_value: Tristate,
+    future_value: Vec<Tristate>,
+    active_value: Vec<Tristate>,
+    bit_width: usize,
 
     own_index: Option<Index>,
     arena: Weak<RwLock<Arena<Box<dyn Component>>>>,
@@ -29,10 +30,11 @@ pub struct Net {
 }
 
 impl Net {
-    pub fn new(component_arena: Weak<RwLock<Arena<Box<dyn Component>>>>) -> Net {
+    pub fn new(bit_width: usize, component_arena: Weak<RwLock<Arena<Box<dyn Component>>>>) -> Net {
         Net {
-            future_value: Tristate::Floating,
-            active_value: Tristate::Floating,
+            future_value: vec![Tristate::Floating; bit_width],
+            active_value: vec![Tristate::Floating; bit_width],
+            bit_width: bit_width,
 
             own_index: None,
             arena: component_arena,
@@ -44,35 +46,67 @@ impl Net {
         self.own_index = Some(index);
     }
 
-    pub fn get(&self) -> Tristate {
-        self.active_value
+    pub fn get(&self, bit: usize) -> Tristate {
+        if bit < self.active_value.len() {
+            self.active_value[bit]
+        } else {
+            Tristate::Error
+        }
     }
 
-    pub fn set(&mut self, value: Tristate) {
-        self.future_value = value;
+    pub fn set(&mut self, bit: usize, value: Tristate) {
+        if bit < self.future_value.len() {
+            self.future_value[bit] = value;
+        }
     }
 
-    pub fn spy(&self) -> Tristate {
-        self.future_value
+    pub fn spy(&self, bit: usize) -> Tristate {
+        if bit < self.future_value.len() {
+            self.future_value[bit]
+        } else {
+            Tristate::Error
+        }
     }
 
-    pub fn overwrite(&mut self, value: Tristate) {
-        self.active_value = value;
+    pub fn overwrite(&mut self, bit: usize, value: Tristate) {
+        if bit < self.active_value.len() {
+            self.active_value[bit] = value;
+        }
     }
 
     pub fn update(&mut self) {
-        self.active_value = self.future_value;
-        self.future_value = Tristate::Floating;
+        let active = &mut self.active_value;
+        let future = &mut self.future_value;
+
+        active.clear();
+        future.drain(0..).for_each(|v| active.push(v));
+        self.future_value = vec![Tristate::Floating; self.bit_width];
     }
 
     pub fn reset(&mut self) {
-        self.active_value = Tristate::Floating;
-        self.future_value = Tristate::Floating;
+        self.active_value = vec![Tristate::Floating; self.bit_width];
+        self.future_value = vec![Tristate::Floating; self.bit_width];
+    }
+
+    pub fn resize(&mut self, new_size: usize) {
+        // TODO: Fix ranges
+        if self.bit_width < new_size {
+            for i in (self.bit_width..new_size) {
+                self.active_value.push(Tristate::Floating);
+                self.future_value.push(Tristate::Floating);
+            }
+        } else {
+            for i in (new_size..self.bit_width) {
+                self.active_value.pop();
+                self.future_value.pop();
+            }
+        }
+        self.bit_width = new_size;
     }
 
     pub fn absorb(&mut self, net: &mut Net) {
-        self.active_value = self.active_value.merge(net.active_value);
-        self.future_value = self.future_value.merge(net.future_value);
+        self.active_value = self.active_value.iter().zip(net.active_value.iter()).map(|(l, r)| l.merge(*r)).collect();
+        self.future_value = self.future_value.iter().zip(net.future_value.iter()).map(|(l, r)| l.merge(*r)).collect();
         if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
             for (component, pin) in net.neighbors.drain() {
                 if let Some(neighbor) = arena.get_mut(component) {
@@ -82,6 +116,35 @@ impl Net {
                     self.neighbors.insert((component, pin));
                 }
             }
+        }
+    }
+
+    pub fn read_u64(&self) -> Option<u64> {
+        let mut weight = 1;
+        let mut result = 0;
+
+        for i in (0..self.bit_width).rev() {
+            match self.active_value[i] {
+                Tristate::Floating => return None,
+                Tristate::Error    => return None,
+                Tristate::High     => result = result | weight,
+                Tristate::Low      => {},
+            }
+            weight = weight << 1;
+        }
+        Some(result)
+    }
+
+    pub fn write_u64(&mut self, value: u64) {
+        let mut weight = 1;
+
+        for i in (0..self.bit_width).rev() {
+            self.future_value[i] = if value & weight != 0 {
+                Tristate::High
+            } else {
+                Tristate::Low
+            };
+            weight = weight << 1;
         }
     }
 
@@ -105,8 +168,7 @@ impl Net {
     }
 
     pub fn clear(&mut self) {
-        self.active_value = Tristate::Floating;
-        self.future_value = Tristate::Floating;
+        self.reset();
         if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
             for (component, pin) in self.neighbors.drain() {
                 if let Some(neighbor) = arena.get_mut(component) {
