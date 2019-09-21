@@ -17,7 +17,7 @@
 use std::sync::{RwLock, Weak};
 use std::collections::HashSet;
 use generational_arena::{Index, Arena};
-use super::{Tristate, Component};
+use super::{Tristate, Component, LogicResult, LogicError};
 
 pub struct Net {
     future_value: Vec<Tristate>,
@@ -50,7 +50,7 @@ impl Net {
         if bit < self.active_value.len() {
             self.active_value[bit]
         } else {
-            Tristate::Error
+            Tristate::Floating
         }
     }
 
@@ -64,7 +64,7 @@ impl Net {
         if bit < self.future_value.len() {
             self.future_value[bit]
         } else {
-            Tristate::Error
+            Tristate::Floating
         }
     }
 
@@ -78,8 +78,7 @@ impl Net {
         let active = &mut self.active_value;
         let future = &mut self.future_value;
 
-        active.clear();
-        future.drain(0..).for_each(|v| active.push(v));
+        std::mem::swap(active, future);
         self.future_value = vec![Tristate::Floating; self.bit_width];
     }
 
@@ -89,14 +88,13 @@ impl Net {
     }
 
     pub fn resize(&mut self, new_size: usize) {
-        // TODO: Fix ranges
         if self.bit_width < new_size {
-            for i in (self.bit_width..new_size) {
+            for _ in 0..(new_size - self.bit_width) {
                 self.active_value.push(Tristate::Floating);
                 self.future_value.push(Tristate::Floating);
             }
         } else {
-            for i in (new_size..self.bit_width) {
+            for _ in 0..(self.bit_width - new_size) {
                 self.active_value.pop();
                 self.future_value.pop();
             }
@@ -104,18 +102,22 @@ impl Net {
         self.bit_width = new_size;
     }
 
-    pub fn absorb(&mut self, net: &mut Net) {
+    pub fn absorb(&mut self, net: &mut Net) -> LogicResult<()> {
         self.active_value = self.active_value.iter().zip(net.active_value.iter()).map(|(l, r)| l.merge(*r)).collect();
         self.future_value = self.future_value.iter().zip(net.future_value.iter()).map(|(l, r)| l.merge(*r)).collect();
-        if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
+        if self.own_index.is_none() {
+            Err(LogicError::InvalidNet)
+        } else if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
             for (component, pin) in net.neighbors.drain() {
                 if let Some(neighbor) = arena.get_mut(component) {
                     neighbor.disconnect(pin);
-                    // TODO: Error management on unwrap
                     neighbor.connect(pin, self.own_index.unwrap());
                     self.neighbors.insert((component, pin));
                 }
             }
+            Ok(())
+        } else {
+            Err(LogicError::InvalidArena)
         }
     }
 
@@ -148,26 +150,37 @@ impl Net {
         }
     }
 
-    pub fn connect(&mut self, component: Index, pin: usize) {
-        if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
+    pub fn connect(&mut self, component: Index, pin: usize) -> LogicResult<()> {
+        if self.own_index.is_none() {
+            Err(LogicError::InvalidNet)
+        } else if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
             if let Some(neighbor) = arena.get_mut(component) {
-                // TODO: Error management on unwrap
                 neighbor.connect(pin, self.own_index.unwrap());
                 self.neighbors.insert((component, pin));
+                Ok(())
+            } else {
+                Err(LogicError::InvalidComponent)
             }
+        } else {
+            Err(LogicError::InvalidArena)
         }
     }
 
-    pub fn disconnect(&mut self, component: Index, pin: usize) {
+    pub fn disconnect(&mut self, component: Index, pin: usize) -> LogicResult<()> {
         if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
             self.neighbors.remove(&(component, pin));
             if let Some(neighbor) = arena.get_mut(component) {
                 neighbor.disconnect(pin);
+                Ok(())
+            } else {
+                Err(LogicError::InvalidComponent)
             }
+        } else {
+            Err(LogicError::InvalidArena)
         }
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self) -> LogicResult<()> {
         self.reset();
         if let Some(mut arena) = self.arena.upgrade().as_ref().and_then(|l| l.try_write().ok()) {
             for (component, pin) in self.neighbors.drain() {
@@ -175,6 +188,9 @@ impl Net {
                     neighbor.disconnect(pin);
                 }
             }
+            Ok(())
+        } else {
+            Err(LogicError::InvalidArena)
         }
     }
 }

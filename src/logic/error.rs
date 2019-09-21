@@ -14,14 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-mod tristate;
-pub use tristate::Tristate;
+pub enum LogicError {
+    InvalidArena,
+    InvalidComponent,
+    InvalidNet,
+}
 
-mod component;
-pub use component::Component;
-
-mod net;
-pub use net::Net;
-
-mod error;
-pub use error::{LogicResult, LogicError};
+pub type LogicResult<T> = Result<T, LogicError>;
